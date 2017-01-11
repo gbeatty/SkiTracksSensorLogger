@@ -1,14 +1,18 @@
 package com.gbeatty.skitrackssensorlogger;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.opengl.GLSurfaceView;
 import android.os.IBinder;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+import android.view.Display;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
@@ -27,10 +31,23 @@ public class MainActivity extends AppCompatActivity implements ServiceConnection
     private Button loggingButton;
     private CheckBox loggingStatus;
 
+    public double[] mainQuaternion = {0, 0, 0, 1};
+    public TextureCubeRenderer pcbRenderer = null;
+    final float pcbDimensions[] = { 1.385f, 0.5f, 0.05f, -2.5f };
+    final int pcbSurfaces[] = { R.drawable.pcb_sides, R.drawable.pcb_sides,
+            R.drawable.pcb_sides, R.drawable.pcb_sides, R.drawable.nxp_logo,
+            R.drawable.nxp_logo };
+
     private static final String[] INITIAL_PERMS={
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.WRITE_EXTERNAL_STORAGE
     };
+
+    @Override
+    public void UpdateQuaternion(double[] q)
+    {
+        this.mainQuaternion = q;
+    }
 
     private boolean hasPermission(String perm) {
         return(PackageManager.PERMISSION_GRANTED==checkSelfPermission(perm));
@@ -95,6 +112,18 @@ public class MainActivity extends AppCompatActivity implements ServiceConnection
         });
 
 
+        Display display = ((WindowManager) this
+                .getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+        int screenRotation = display.getRotation();
+
+        GLSurfaceView pcbGlview = (GLSurfaceView) findViewById(R.id.pcb_glview);
+        pcbGlview.setSystemUiVisibility(View.VISIBLE);
+        pcbGlview.setEGLContextClientVersion(1);
+
+        pcbRenderer = new TextureCubeRenderer(this, screenRotation);
+        pcbRenderer.addCube(pcbSurfaces, pcbDimensions, "Rev5 board");
+        pcbRenderer.selectCube(0);
+        pcbGlview.setRenderer(pcbRenderer);
     }
 
     private void DisconnectMetaWearBoard() {

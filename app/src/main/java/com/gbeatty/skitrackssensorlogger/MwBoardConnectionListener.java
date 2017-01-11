@@ -6,4 +6,5 @@ package com.gbeatty.skitrackssensorlogger;
 public interface MwBoardConnectionListener {
     void Connected();
     void Disconnected();
+    void UpdateQuaternion(double[] q);
 }

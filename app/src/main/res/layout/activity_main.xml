@@ -86,4 +86,26 @@
         android:layout_alignParentStart="true"
         android:enabled="false" />
 
+    <LinearLayout
+        android:id="@+id/graphicFrame"
+        android:layout_width="fill_parent"
+        android:layout_height="50px"
+        android:layout_weight="50"
+        android:background="#000000"
+        android:orientation="vertical"
+        android:padding="5dip"
+        android:visibility="visible"
+        android:layout_below="@+id/loggingButton"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentStart="true"
+        android:weightSum="1">
+
+        <android.opengl.GLSurfaceView
+            android:id="@+id/pcb_glview"
+            android:layout_width="fill_parent"
+            android:layout_height="fill_parent"
+            android:visibility="visible"
+            android:layout_weight="0.32" />
+    </LinearLayout>
+
 </RelativeLayout>

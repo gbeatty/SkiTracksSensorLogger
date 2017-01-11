@@ -255,11 +255,11 @@ public class LoggingService extends Service implements ServiceConnection, Locati
             bmi160AccModule = mwBoard.getModule(Bmi160Accelerometer.class);
 
             // Set measurement range to +/- 2G
-            // Set output data rate to 50Hz
-            final int sampleDeltaMillisecond = (int)(1.0 / 25.0 * 1000.0);
+            // Set output data rate to 25Hz
+            final int sampleDeltaMillisecond = (int)(1.0 / 50.0 * 1000.0);
             bmi160AccModule.configureAxisSampling()
                     .setFullScaleRange(Bmi160Accelerometer.AccRange.AR_2G)
-                    .setOutputDataRate(Bmi160Accelerometer.OutputDataRate.ODR_25_HZ)
+                    .setOutputDataRate(Bmi160Accelerometer.OutputDataRate.ODR_50_HZ)
                     .commit();
 
             MyTimerTask timerTask = new MyTimerTask();
@@ -299,6 +299,7 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
                             try {
                                 accelWriter.write(format.format(sampleTime.getTime()) + ',' + axes.x().toString() + ',' + axes.y().toString() + ',' + axes.z().toString() + '\n');
+                                UpdateData(axes.x(), axes.y(), axes.z(), SensorType.ACCEL);
                             } catch (IOException e) {
                                 Log.e("Exception", "Accel write failed: " + e.toString());
                             }
@@ -339,10 +340,10 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
             bmi160GyroModule = mwBoard.getModule(Bmi160Gyro.class);
 
-            final int sampleDeltaMillisecond = (int)(1.0 /25.0 * 1000.0);
+            final int sampleDeltaMillisecond = (int)(1.0 /50.0 * 1000.0);
             bmi160GyroModule.configure()
                     .setFullScaleRange(Bmi160Gyro.FullScaleRange.FSR_250)
-                    .setOutputDataRate(Bmi160Gyro.OutputDataRate.ODR_25_HZ)
+                    .setOutputDataRate(Bmi160Gyro.OutputDataRate.ODR_50_HZ)
                     .commit();
 
             bmi160GyroModule.routeData().fromAxes()
@@ -370,6 +371,7 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
                             try {
                                 gyroWriter.write(format.format(sampleTime.getTime()) + ',' + spinData.x().toString() + ',' + spinData.y().toString() + ',' + spinData.z().toString() + '\n');
+                                UpdateData(spinData.x(), spinData.y(), spinData.z(), SensorType.GYRO);
                             } catch (IOException e) {
                                 Log.e("Exception", "GyroData write failed: " + e.toString());
                             }
@@ -413,7 +415,7 @@ public class LoggingService extends Service implements ServiceConnection, Locati
             bmm150MagModule.setPowerPreset(Bmm150Magnetometer.PowerPreset.ENHANCED_REGULAR);
             bmm150MagModule.enableBFieldSampling();
 
-            // ENHANCED_REGULAR mode samples at 10Hz
+            // HIGH_ACCURACY mode samples at 10Hz
             final int sampleDeltaMillisecond = (int)(1.0 / 10.0 * 1000.0);
 
             bmm150MagModule.routeData()
@@ -471,6 +473,7 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
                                             try {
                                                 magWriter.write(format.format(sampleTime.getTime()) + ',' + magData.x() + ',' + magData.y() + ',' + magData.z() + '\n');
+                                                UpdateData(magData.x(), magData.y(), magData.z(), SensorType.MAG);
                                             } catch (IOException e) {
                                                 Log.e("Exception", "MagData write failed: " + e.toString());
                                             }
@@ -500,6 +503,64 @@ public class LoggingService extends Service implements ServiceConnection, Locati
                 magWriter.close();
             } catch (IOException e) {
                 Log.e("SkiTracksLogger", "Mag file close failed: " + e.toString());
+            }
+        }
+    }
+
+    private enum SensorType
+    {
+        ACCEL,
+        GYRO,
+        MAG
+    }
+
+    private boolean accelUpdated = false;
+    private boolean gyroUpdated = false;
+    double ax, ay, az;
+    double gx, gy, gz;
+    double magx, magy, magz;
+    MadgwickAHRSIMU sensorFusion = null;
+    private void UpdateData(double x, double y, double z, SensorType sensorType)
+    {
+        synchronized(this)
+        {
+            if(sensorFusion == null)
+            {
+                double[] q = {0, 0, 0, 1};
+                sensorFusion = new MadgwickAHRSIMU(4000, q, 36);
+            }
+
+            switch (sensorType) {
+                case ACCEL:
+                    ax = x;
+                    ay = y;
+                    az = z;
+                    accelUpdated = true;
+                    break;
+
+                case GYRO:
+                    gx = x;
+                    gy = y;
+                    gz = z;
+                    gyroUpdated = true;
+                    break;
+
+                case MAG:
+                    magx = x;
+                    magy = y;
+                    magz = z;
+                    break;
+            }
+
+            if(accelUpdated == true && gyroUpdated == true)
+            {
+                sensorFusion.AHRSUpdate(gx, gy, gz, ax, ay, az, magx, magy, magz);
+                accelUpdated = false;
+                gyroUpdated = false;
+
+                double[] q = sensorFusion.getOrientationQuaternion();
+                registeredConnectionListener.UpdateQuaternion(q);
+                //Log.i("SkiTracksLogger", "q:  " + q[0] + " " + q[1] + " " + q[2] + " " + q[3]);
             }
         }
     }
