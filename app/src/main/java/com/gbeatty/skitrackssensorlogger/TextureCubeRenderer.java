@@ -148,8 +148,13 @@ public class TextureCubeRenderer implements GLSurfaceView.Renderer {
 	   gl.glLoadIdentity();  // replace the current matrix with the identity matrix
 
 	   DemoQuaternion quaternion = new DemoQuaternion();
-	   quaternion.set(mainActivity.mainQuaternion);
-       rv.computeFromQuaternion(quaternion, MyUtils.AngleUnits.DEGREES);
+
+	   //quaternion.set(mainActivity.mainQuaternion);
+
+       if(mainActivity.rotationMatrix != null)
+           quaternion.computeFromRM(mainActivity.rotationMatrix);
+
+	   rv.computeFromQuaternion(quaternion, MyUtils.AngleUnits.DEGREES);
 	   
 	   if (this.lastDisplayedCube<0) {
 		   Log.e("TextureCubeRenderer", "problem found in onDrawFrame\n");

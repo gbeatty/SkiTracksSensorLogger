@@ -7,4 +7,5 @@ public interface MwBoardConnectionListener {
     void Connected();
     void Disconnected();
     void UpdateQuaternion(double[] q);
+    void UpdateRotationVector(float[] rotationMtx);
 }

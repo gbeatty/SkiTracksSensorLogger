@@ -37,21 +37,137 @@ import java.io.OutputStreamWriter;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Timer;
 import java.util.TimerTask;
 
 public class LoggingService extends Service implements ServiceConnection, LocationListener{
 
-    private int sampleCount = 0;
-    private class MyTimerTask extends TimerTask
-    {
-        int iteration = 1;
+    SensorFusion sf = new SensorFusion();
+    private LinkedBlockingQueue<double[]> accelSamples = new LinkedBlockingQueue<double[]>();
+    private LinkedBlockingQueue<double[]> gyroSamples = new LinkedBlockingQueue<double[]>();
+    private double[] currentMagSample = null;
 
-        @Override
-        public void run() {
-            Log.i("SkiTracksLogger", "Rate:  " + sampleCount / iteration);
-            ++iteration;
-        }
+    private void StartDataProcessing()
+    {
+        startRateMonitor(1000);
+        startDataUpdate(10);
+        startDataReporting(40);
+    }
+
+    private void StopDataProcessing()
+    {
+        rateMonitorTask.cancel();
+        dataUpdateTask.cancel();
+        dataReportingTask.cancel();
+        accelSamples.clear();
+        gyroSamples.clear();
+    }
+
+    private double lastTimerTime = 0;
+    private AtomicInteger numFailedSamples = new AtomicInteger(0);
+    private AtomicInteger numProcessedSamples = new AtomicInteger(0);
+    private AtomicInteger backlogSize = new AtomicInteger(0);
+    private TimerTask rateMonitorTask;
+    private void startRateMonitor(int period) {
+
+        rateMonitorTask = new TimerTask() {
+            public void run() {
+                double currentTime = System.currentTimeMillis();
+
+                if(lastTimerTime != 0) {
+
+                    double deltaTime = currentTime - lastTimerTime;
+                    int numSamples = numProcessedSamples.getAndSet(0);
+                    Log.i("SkiTracksLogger", "Rate:  " + numSamples / deltaTime * 1000);
+
+                    int backSize = backlogSize.get();
+                    int failedSize = numFailedSamples.getAndSet(0);
+                    boolean backlogged = backSize > 10;
+                    boolean ranDry = failedSize > 1;
+
+                    Log.i("SkiTracksLogger", "Backlog size: " + backSize + "    Failed: " + failedSize);
+
+                    if (backlogged && ranDry) {
+                        // Our streaming rate must be fluctuating a lot, so leave the update rate alone
+                        Log.i("SkiTracksLogger", "Rate Fluctuating");
+                    } else {
+                        int newPeriod;
+                        if (backlogged) {
+                            // pick up the pace, 20% faster
+                            newPeriod = updateTaskPeriod - (int) ((double) updateTaskPeriod * 0.2);
+                            Log.i("SkiTracksLogger", "Speeding Up: " + newPeriod);
+
+
+                        } else {
+                            // slow down, 20% slower
+                            newPeriod = updateTaskPeriod + (int) ((double) updateTaskPeriod * 0.2);
+                            Log.i("SkiTracksLogger", "Slowing Down: " + newPeriod);
+
+                        }
+
+                        dataUpdateTask.cancel();
+                        startDataUpdate(newPeriod);
+                    }
+                }
+
+                lastTimerTime = currentTime;
+            }
+        };
+
+        Timer timer = new Timer();
+        timer.scheduleAtFixedRate(rateMonitorTask, 0, period);
+    }
+
+    private TimerTask dataUpdateTask;
+    private int updateTaskPeriod;
+    private void startDataUpdate(int period) {
+
+        dataUpdateTask = new TimerTask() {
+            public void run() {
+                if (accelSamples.isEmpty() || gyroSamples.isEmpty() || currentMagSample == null) {
+                    numFailedSamples.incrementAndGet();
+                }
+                else {
+                    try {
+                        double[] accel = accelSamples.take();
+                        double[] gyro = gyroSamples.take();
+
+                        numProcessedSamples.incrementAndGet();
+                        backlogSize.set(accelSamples.size());
+
+                        float[] magFloat = {(float) currentMagSample[0], (float) currentMagSample[1], (float) currentMagSample[2]};
+                        sf.SetMag(magFloat);
+
+                        float[] accelFloat = {(float) accel[0], (float) accel[1], (float) accel[2]};
+                        sf.SetAccel(accelFloat);
+
+                        float[] gyroFloat = {(float) gyro[0], (float) gyro[1], (float) gyro[2]};
+                        sf.SetGyro(gyroFloat, (float) System.currentTimeMillis() / 1000.0f);
+                    }
+                    catch (InterruptedException e) {
+                    }
+                }
+            }
+        };
+
+        Timer timer = new Timer();
+        timer.schedule(dataUpdateTask, 0, period);
+        updateTaskPeriod = period;
+    }
+
+    private TimerTask dataReportingTask;
+    private void startDataReporting(int period) {
+
+        dataReportingTask = new TimerTask() {
+            public void run() {
+                registeredConnectionListener.UpdateRotationVector(sf.gyroMatrix);
+            }
+        };
+
+        Timer timer = new Timer();
+        timer.scheduleAtFixedRate(dataReportingTask, 0, period);
     }
 
     final SimpleDateFormat format = new SimpleDateFormat("MM_dd_yyyy_hh_mm_ss.SSS");
@@ -154,6 +270,13 @@ public class LoggingService extends Service implements ServiceConnection, Locati
         LocationManager locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100, 0, this);
 
+        Notification notification = new Notification.Builder(this)
+                .setContentTitle("SkiTracks Logger Service")
+                .setTicker("SkiTracks Logger Service")
+                .setContentText("SkiTracks Logger Service")
+                .setOngoing(true)
+                .build();
+        startForeground(101, notification);
         return START_STICKY;
     }
 
@@ -222,6 +345,8 @@ public class LoggingService extends Service implements ServiceConnection, Locati
         StartLogAccel();
         StartLogGyro();
         StartLogMag();
+
+        StartDataProcessing();
     }
 
     public void StopLogging() {
@@ -229,6 +354,7 @@ public class LoggingService extends Service implements ServiceConnection, Locati
         StopLogAccel();
         StopLogGryo();
         StopLogMag();
+        StopDataProcessing();
     }
 
     private void StartLogGps() {
@@ -250,28 +376,24 @@ public class LoggingService extends Service implements ServiceConnection, Locati
     private void StartLogAccel() {
         Log.i("SkiTracksLogger", "Logging Accelerometer Data");
         try {
-            accelWriter = NewOutputStreamWriter("Accel_");
+            //accelWriter = NewOutputStreamWriter("Accel_");
 
             bmi160AccModule = mwBoard.getModule(Bmi160Accelerometer.class);
 
             // Set measurement range to +/- 2G
             // Set output data rate to 25Hz
-            final int sampleDeltaMillisecond = (int)(1.0 / 50.0 * 1000.0);
+            final int sampleDeltaMillisecond = (int)(1.0 / 100.0 * 1000.0);
             bmi160AccModule.configureAxisSampling()
                     .setFullScaleRange(Bmi160Accelerometer.AccRange.AR_2G)
-                    .setOutputDataRate(Bmi160Accelerometer.OutputDataRate.ODR_50_HZ)
+                    .setOutputDataRate(Bmi160Accelerometer.OutputDataRate.ODR_100_HZ)
                     .commit();
-
-            MyTimerTask timerTask = new MyTimerTask();
-            Timer timer = new Timer(true);
-            timer.scheduleAtFixedRate(timerTask, 1000, 1000);
 
             // enable axis sampling
             bmi160AccModule.enableAxisSampling();
 
             final Logging logger = mwBoard.getModule(Logging.class);
 
-            bmi160AccModule.routeData().fromAxes()
+            bmi160AccModule.routeData().fromHighFreqAxes()
                     .stream("AccData")
                     .commit().onComplete(new AsyncOperation.CompletionHandler<RouteManager>() {
 
@@ -282,7 +404,6 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
                         @Override
                         public void process(Message msg) {
-                            ++sampleCount;
                             CartesianFloat axes = CorrectForDeviceMountingOrientation(msg.getData(CartesianFloat.class));
 
                             // ignore the timestamp in the message because data gets transferred
@@ -297,12 +418,12 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
                             sampleTime.add(Calendar.MILLISECOND, sampleDeltaMillisecond);
 
-                            try {
-                                accelWriter.write(format.format(sampleTime.getTime()) + ',' + axes.x().toString() + ',' + axes.y().toString() + ',' + axes.z().toString() + '\n');
-                                UpdateData(axes.x(), axes.y(), axes.z(), SensorType.ACCEL);
-                            } catch (IOException e) {
-                                Log.e("Exception", "Accel write failed: " + e.toString());
-                            }
+                            //try {
+                                //accelWriter.write(format.format(sampleTime.getTime()) + ',' + axes.x().toString() + ',' + axes.y().toString() + ',' + axes.z().toString() + '\n');
+                                accelSamples.add(new double[]{axes.x(), axes.y(), axes.z()});
+                            //} catch (IOException e) {
+                            //    Log.e("Exception", "Accel write failed: " + e.toString());
+                            //}
                             //Log.i("SkiTracksLogger", "axes:  " + axes.toString());
                         }
                     });
@@ -336,17 +457,17 @@ public class LoggingService extends Service implements ServiceConnection, Locati
     private void StartLogGyro() {
         Log.i("SkiTracksLogger", "Logging Gyroscope Data");
         try {
-            gyroWriter = NewOutputStreamWriter("Gyro_");
+            //gyroWriter = NewOutputStreamWriter("Gyro_");
 
             bmi160GyroModule = mwBoard.getModule(Bmi160Gyro.class);
 
-            final int sampleDeltaMillisecond = (int)(1.0 /50.0 * 1000.0);
+            final int sampleDeltaMillisecond = (int)(1.0 /100.0 * 1000.0);
             bmi160GyroModule.configure()
                     .setFullScaleRange(Bmi160Gyro.FullScaleRange.FSR_250)
-                    .setOutputDataRate(Bmi160Gyro.OutputDataRate.ODR_50_HZ)
+                    .setOutputDataRate(Bmi160Gyro.OutputDataRate.ODR_100_HZ)
                     .commit();
 
-            bmi160GyroModule.routeData().fromAxes()
+            bmi160GyroModule.routeData().fromHighFreqAxes()
                     .stream("GyroData").commit().onComplete(new AsyncOperation.CompletionHandler<RouteManager>() {
                 @Override
                 public void success(RouteManager result) {
@@ -369,12 +490,12 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
                             sampleTime.add(Calendar.MILLISECOND, sampleDeltaMillisecond);
 
-                            try {
-                                gyroWriter.write(format.format(sampleTime.getTime()) + ',' + spinData.x().toString() + ',' + spinData.y().toString() + ',' + spinData.z().toString() + '\n');
-                                UpdateData(spinData.x(), spinData.y(), spinData.z(), SensorType.GYRO);
-                            } catch (IOException e) {
-                                Log.e("Exception", "GyroData write failed: " + e.toString());
-                            }
+                            //try {
+                                //gyroWriter.write(format.format(sampleTime.getTime()) + ',' + spinData.x().toString() + ',' + spinData.y().toString() + ',' + spinData.z().toString() + '\n');
+                                gyroSamples.add(new double[]{spinData.x(), spinData.y(), spinData.z()});
+                            //} catch (IOException e) {
+                            //    Log.e("Exception", "GyroData write failed: " + e.toString());
+                            //}
                             //Log.i("SkiTracksLogger", "gyro:  " + spinData.toString());
                         }
                     });
@@ -409,13 +530,13 @@ public class LoggingService extends Service implements ServiceConnection, Locati
     private void StartLogMag() {
         Log.i("SkiTracksLogger", "Logging Magnetometer Data");
         try {
-           magWriter = NewOutputStreamWriter("Mag_");
+           //magWriter = NewOutputStreamWriter("Mag_");
 
             bmm150MagModule = mwBoard.getModule(Bmm150Magnetometer.class);
             bmm150MagModule.setPowerPreset(Bmm150Magnetometer.PowerPreset.ENHANCED_REGULAR);
             bmm150MagModule.enableBFieldSampling();
 
-            // HIGH_ACCURACY mode samples at 10Hz
+            // ENHANCED_REGULAR mode samples at 10Hz
             final int sampleDeltaMillisecond = (int)(1.0 / 10.0 * 1000.0);
 
             bmm150MagModule.routeData()
@@ -442,23 +563,21 @@ public class LoggingService extends Service implements ServiceConnection, Locati
                                             CartesianFloat magData = msg.getData(CartesianFloat.class);
 
                                             // correct for hard iron distortion
-                                            double x = magData.x() - hardIronCorrectionX;
+                                            /*double x = magData.x() - hardIronCorrectionX;
                                             double y = magData.y() - hardIronCorrectionY;
                                             double z = magData.z() - hardIronCorrectionZ;
 
                                             double correctedX = softIronMtx1[0] * x + softIronMtx1[1] * y + softIronMtx1[2] * z;
                                             double correctedY = softIronMtx2[0] * x + softIronMtx2[1] * y + softIronMtx2[2] * z;
-                                            double correctedZ = softIronMtx3[0] * x + softIronMtx3[1] * y + softIronMtx3[2] * z;
+                                            double correctedZ = softIronMtx3[0] * x + softIronMtx3[1] * y + softIronMtx3[2] * z;*/
 
                                             // The magnetometer isn't oriented in the same direction as the accel & gyro.
                                             // It's rotated 180 degrees around the x axis, so correct so it matches
-                                            mx = correctedX;
-                                            my = -correctedY;
-                                            mz = -correctedZ;
+                                            mx =  magData.x();
+                                            my = -magData.y();
+                                            mz = -magData.z();
 
                                             magData = CorrectForDeviceMountingOrientation(new CartesianFloatImpl((float)mx, (float)my, (float)mz));
-
-                                            double heading = -Math.atan2(magData.y(), magData.x()) * 180.0 / 3.14159;
 
                                             // ignore the timestamp in the message because data gets transferred
                                             // from the board in blocks so we'll get a couple samples together
@@ -471,12 +590,12 @@ public class LoggingService extends Service implements ServiceConnection, Locati
 
                                             sampleTime.add(Calendar.MILLISECOND, sampleDeltaMillisecond);
 
-                                            try {
-                                                magWriter.write(format.format(sampleTime.getTime()) + ',' + magData.x() + ',' + magData.y() + ',' + magData.z() + '\n');
-                                                UpdateData(magData.x(), magData.y(), magData.z(), SensorType.MAG);
-                                            } catch (IOException e) {
-                                                Log.e("Exception", "MagData write failed: " + e.toString());
-                                            }
+                                            //try {
+                                                //magWriter.write(format.format(sampleTime.getTime()) + ',' + magData.x() + ',' + magData.y() + ',' + magData.z() + '\n');
+                                                currentMagSample = new double[]{magData.x(), magData.y(), magData.z()};
+                                            //} catch (IOException e) {
+                                            //    Log.e("Exception", "MagData write failed: " + e.toString());
+                                            //}
                                             //Log.i("SkiTracksLogger", "mag:  " + magData.toString());
                                             //Log.i("SkiTracksLogger", "heading:  " + String.format("%.2f", heading));
                                         }
@@ -503,64 +622,6 @@ public class LoggingService extends Service implements ServiceConnection, Locati
                 magWriter.close();
             } catch (IOException e) {
                 Log.e("SkiTracksLogger", "Mag file close failed: " + e.toString());
-            }
-        }
-    }
-
-    private enum SensorType
-    {
-        ACCEL,
-        GYRO,
-        MAG
-    }
-
-    private boolean accelUpdated = false;
-    private boolean gyroUpdated = false;
-    double ax, ay, az;
-    double gx, gy, gz;
-    double magx, magy, magz;
-    MadgwickAHRSIMU sensorFusion = null;
-    private void UpdateData(double x, double y, double z, SensorType sensorType)
-    {
-        synchronized(this)
-        {
-            if(sensorFusion == null)
-            {
-                double[] q = {0, 0, 0, 1};
-                sensorFusion = new MadgwickAHRSIMU(4000, q, 36);
-            }
-
-            switch (sensorType) {
-                case ACCEL:
-                    ax = x;
-                    ay = y;
-                    az = z;
-                    accelUpdated = true;
-                    break;
-
-                case GYRO:
-                    gx = x;
-                    gy = y;
-                    gz = z;
-                    gyroUpdated = true;
-                    break;
-
-                case MAG:
-                    magx = x;
-                    magy = y;
-                    magz = z;
-                    break;
-            }
-
-            if(accelUpdated == true && gyroUpdated == true)
-            {
-                sensorFusion.AHRSUpdate(gx, gy, gz, ax, ay, az, magx, magy, magz);
-                accelUpdated = false;
-                gyroUpdated = false;
-
-                double[] q = sensorFusion.getOrientationQuaternion();
-                registeredConnectionListener.UpdateQuaternion(q);
-                //Log.i("SkiTracksLogger", "q:  " + q[0] + " " + q[1] + " " + q[2] + " " + q[3]);
             }
         }
     }

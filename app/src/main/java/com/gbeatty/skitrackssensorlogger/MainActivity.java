@@ -32,6 +32,7 @@ public class MainActivity extends AppCompatActivity implements ServiceConnection
     private CheckBox loggingStatus;
 
     public double[] mainQuaternion = {0, 0, 0, 1};
+    public float[] rotationMatrix;
     public TextureCubeRenderer pcbRenderer = null;
     final float pcbDimensions[] = { 1.385f, 0.5f, 0.05f, -2.5f };
     final int pcbSurfaces[] = { R.drawable.pcb_sides, R.drawable.pcb_sides,
@@ -48,6 +49,9 @@ public class MainActivity extends AppCompatActivity implements ServiceConnection
     {
         this.mainQuaternion = q;
     }
+
+    @Override
+    public void UpdateRotationVector(float[] rotationMtx) { rotationMatrix = rotationMtx; }
 
     private boolean hasPermission(String perm) {
         return(PackageManager.PERMISSION_GRANTED==checkSelfPermission(perm));
